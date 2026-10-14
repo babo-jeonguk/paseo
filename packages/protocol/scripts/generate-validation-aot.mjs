@@ -93,11 +93,14 @@ const [
 const { sessionOutboundMessageOptions } = await loadSourceFile(envelopeSource, { cacheBust: true });
 const sessionTags = sessionOutboundMessageOptions.map((option) => option.shape.type.value);
 const sessionExport = (index) => `SessionOutboundMessage${index}`;
-const envelopeImport = relative(dirname(source), envelopeSource).replace(/\.ts$/, ".js");
-const metadataImport = relative(dirname(runtimeSchemaMetadata), envelopeSource).replace(
-  /\.ts$/,
-  ".js",
-);
+const envelopeImport = relative(dirname(source), envelopeSource)
+  .replace(/\.ts$/, ".js")
+  .split(sep)
+  .join("/");
+const metadataImport = relative(dirname(runtimeSchemaMetadata), envelopeSource)
+  .replace(/\.ts$/, ".js")
+  .split(sep)
+  .join("/");
 
 await mkdir(dirname(source), { recursive: true });
 await writeFile(
