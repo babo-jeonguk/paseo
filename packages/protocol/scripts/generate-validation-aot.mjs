@@ -92,7 +92,9 @@ const [
 // per compiled schema, so this keeps every generated function small enough for V8 to optimize cheaply.
 const { sessionOutboundMessageOptions } = await loadSourceFile(envelopeSource, { cacheBust: true });
 const sessionTags = sessionOutboundMessageOptions.map((option) => option.shape.type.value);
-const sessionExport = (index) => `SessionOutboundMessage${index}`;
+function sessionExport(index) {
+  return `SessionOutboundMessage${index}`;
+}
 const envelopeImport = relative(dirname(source), envelopeSource)
   .replace(/\.ts$/, ".js")
   .split(sep)
