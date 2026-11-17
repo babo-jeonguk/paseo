@@ -9,6 +9,7 @@
 //
 // usage: node probe.mjs <claude|codex|opencode|opencode1> <direct|nested> <port>
 import { execFileSync, spawn } from "node:child_process";
+import crypto from "node:crypto";
 import fs from "node:fs";
 import http from "node:http";
 import net from "node:net";
@@ -166,7 +167,9 @@ await new Promise((r) => mock.listen(0, "127.0.0.1", r));
 const mockUrl = `http://127.0.0.1:${mock.address().port}`;
 
 // ---------- agent launch ----------
-const env = { ...process.env, NO_COLOR: "1" };
+// Marker inherited by the agent and its descendants; used by the proposed reap step.
+const marker = `probe-${crypto.randomUUID()}`;
+const env = { ...process.env, NO_COLOR: "1", ORPHAN_PROBE_MARKER: marker };
 let command;
 let args;
 if (agent === "claude") {
@@ -197,7 +200,8 @@ if (agent === "claude") {
     permission: { bash: "allow", edit: "allow", external_directory: "allow" },
     autoupdate: false, share: "disabled",
   }));
-  Object.assign(env, { OPENCODE_CONFIG: config });
+  // Separate data/state per run so OpenCode 1 and 2 do not share a database.
+  Object.assign(env, { OPENCODE_CONFIG: config, XDG_DATA_HOME: path.join(work, "data"), XDG_STATE_HOME: path.join(work, "state") });
   // "opencode" is OpenCode 2 (@opencode/cli); "opencode1" is OpenCode 1 (opencode-ai), installed separately.
   command = agent === "opencode1" ? process.env.OPENCODE1_BIN : "opencode";
   args = ["run", "--model", "mock/mock-model", "go"];
@@ -210,13 +214,71 @@ const child = spawn(command, args, { cwd: work, env, shell: isWin, stdio: ["igno
 let childExit = null;
 child.on("exit", (code, signal) => { childExit = { code, signal }; });
 
+// ---------- proposed reap step ----------
+// Linux: /proc/<pid>/environ holds the marker. macOS: `ps -E` shows it.
+// Windows: ParentProcessId still names the dead agent; keep only processes created after their parent.
+function markerProcesses() {
+  if (process.platform === "linux") {
+    const found = [];
+    for (const name of fs.readdirSync("/proc")) {
+      if (!/^\d+$/.test(name) || Number(name) === process.pid) continue;
+      try {
+        const entries = fs.readFileSync(`/proc/${name}/environ`).toString("utf8").split("\0");
+        if (entries.includes(`ORPHAN_PROBE_MARKER=${marker}`)) found.push(Number(name));
+      } catch {}
+    }
+    return found;
+  }
+  const out = execFileSync("ps", ["-A", "-ww", "-E", "-o", "pid=,command="], { encoding: "utf8", maxBuffer: 64 << 20 });
+  const token = new RegExp(`(^|\\s)ORPHAN_PROBE_MARKER=${marker}(\\s|$)`);
+  return out.split("\n").map((l) => l.trim().match(/^(\d+)\s+(.*)$/)).filter((m) => m && token.test(m[2]))
+    .map((m) => Number(m[1])).filter((pid) => pid !== process.pid);
+}
+function windowsDescendants(agentPid, agentCreated) {
+  const table = processes();
+  const found = new Map([[agentPid, agentCreated]]);
+  for (let changed = true; changed; ) {
+    changed = false;
+    for (const p of table) {
+      if (found.has(p.pid) || !found.has(p.ppid)) continue;
+      const parentCreated = found.get(p.ppid);
+      if (p.created !== undefined && parentCreated !== undefined && p.created >= parentCreated) {
+        found.set(p.pid, p.created);
+        changed = true;
+      }
+    }
+  }
+  found.delete(agentPid);
+  return [...found.keys()];
+}
+async function reap(agentProc, tableBeforeKill) {
+  const method = isWin ? "parent-pid+creation-time" : "marker-env";
+  const agentCreated = tableBeforeKill.find((p) => p.pid === agentProc.pid)?.created;
+  const pids = isWin ? windowsDescendants(agentProc.pid, agentCreated) : markerProcesses();
+  const table = new Map(processes().map((p) => [p.pid, p]));
+  for (const pid of pids) {
+    try {
+      if (isWin) execFileSync("taskkill", ["/F", "/PID", String(pid)], { stdio: "ignore" });
+      else process.kill(pid, "SIGKILL");
+    } catch {}
+  }
+  await sleep(3000);
+  const remaining = processes().filter(isServer);
+  return {
+    method,
+    found: pids.map((pid) => ({ pid, name: base(table.get(pid)?.name || "?") })),
+    serverProcessesAfterReap: remaining.map((p) => p.pid),
+    portOpenAfterReap: await portOpen(),
+  };
+}
+
 // ---------- process table ----------
 function processes() {
   if (isWin) {
     const out = execFileSync("powershell", ["-NoProfile", "-Command",
-      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine | ConvertTo-Json -Compress"],
+      "Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,@{n='Created';e={$_.CreationDate.ToUniversalTime().ToString('o')}} | ConvertTo-Json -Compress"],
       { encoding: "utf8", maxBuffer: 64 << 20 });
-    return JSON.parse(out).map((p) => ({ pid: p.ProcessId, ppid: p.ParentProcessId, name: p.Name || "", args: p.CommandLine || "" }));
+    return JSON.parse(out).map((p) => ({ pid: p.ProcessId, ppid: p.ParentProcessId, name: p.Name || "", args: p.CommandLine || "", created: p.Created ? Date.parse(p.Created) : undefined }));
   }
   const names = new Map(execFileSync("ps", ["-A", "-o", "pid=,comm="], { encoding: "utf8" }).trim().split("\n").map((l) => {
     const m = l.trim().match(/^(\d+)\s+(.*)$/); return [Number(m[1]), m[2]];
@@ -270,6 +332,7 @@ try {
   result.serverProcessesAfter = after.map((p) => ({ pid: p.pid, ppid: p.ppid, name: base(p.name) }));
   result.portOpenAfter = await portOpen();
   result.status = after.length || result.portOpenAfter ? "LEFT_RUNNING" : "cleaned_up";
+  if (result.status === "LEFT_RUNNING") result.reap = await reap(agentProc, table);
 } catch (error) {
   result.error = String(error?.message || error);
 } finally {
