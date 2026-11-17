@@ -1,0 +1,54 @@
+name: orphan-process-probe
+on:
+  push:
+    branches: [ci/orphan-process-probe]
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  probe:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 40
+    defaults:
+      run:
+        shell: bash
+        working-directory: probe
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install agent CLIs
+        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+      - name: Versions
+        run: |
+          claude --version || true
+          codex --version || true
+          opencode --version || true
+          python --version
+      - name: Probe
+        run: |
+          i=0
+          for a in claude codex opencode; do
+            for v in direct nested; do
+              i=$((i+1))
+              node probe.mjs "$a" "$v" $((18100+i)) || echo "probe crashed: $a $v"
+            done
+          done
+      - name: Summary
+        if: always()
+        run: |
+          echo "### ${{ matrix.os }}" >> "$GITHUB_STEP_SUMMARY"
+          node summarize.mjs | tee -a "$GITHUB_STEP_SUMMARY"
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: results-${{ matrix.os }}
+          path: probe/results
