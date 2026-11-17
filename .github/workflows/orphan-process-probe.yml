@@ -26,17 +26,22 @@ jobs:
         with:
           python-version: "3.12"
       - name: Install agent CLIs
-        run: npm install -g @anthropic-ai/claude-code @openai/codex opencode-ai
+        run: |
+          npm install -g @anthropic-ai/claude-code @openai/codex @opencode/cli
+          npm install --prefix "$RUNNER_TEMP/opencode1" opencode-ai
+          if [ "$RUNNER_OS" = Windows ]; then bin="$(cygpath -w "$RUNNER_TEMP/opencode1/node_modules/.bin/opencode.cmd")"; else bin="$RUNNER_TEMP/opencode1/node_modules/.bin/opencode"; fi
+          echo "OPENCODE1_BIN=$bin" >> "$GITHUB_ENV"
       - name: Versions
         run: |
           claude --version || true
           codex --version || true
           opencode --version || true
+          "$OPENCODE1_BIN" --version || true
           python --version
       - name: Probe
         run: |
           i=0
-          for a in claude codex opencode; do
+          for a in claude codex opencode opencode1; do
             for v in direct nested; do
               i=$((i+1))
               node probe.mjs "$a" "$v" $((18100+i)) || echo "probe crashed: $a $v"

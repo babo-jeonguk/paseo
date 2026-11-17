@@ -7,7 +7,7 @@
 // (SIGKILL / TerminateProcess, no tree kill). After a grace period the probe reports
 // whether the server is still alive.
 //
-// usage: node probe.mjs <claude|codex|opencode> <direct|nested> <port>
+// usage: node probe.mjs <claude|codex|opencode|opencode1> <direct|nested> <port>
 import { execFileSync, spawn } from "node:child_process";
 import fs from "node:fs";
 import http from "node:http";
@@ -188,7 +188,7 @@ if (agent === "claude") {
   Object.assign(env, { CODEX_HOME: home, MOCK_API_KEY: "mock" });
   command = "codex";
   args = ["exec", "--skip-git-repo-check", "--dangerously-bypass-approvals-and-sandbox", "go"];
-} else if (agent === "opencode") {
+} else if (agent === "opencode" || agent === "opencode1") {
   const config = path.join(work, "opencode.json");
   fs.writeFileSync(config, JSON.stringify({
     $schema: "https://opencode.ai/config.json",
@@ -198,7 +198,8 @@ if (agent === "claude") {
     autoupdate: false, share: "disabled",
   }));
   Object.assign(env, { OPENCODE_CONFIG: config });
-  command = "opencode";
+  // "opencode" is OpenCode 2 (@opencode/cli); "opencode1" is OpenCode 1 (opencode-ai), installed separately.
+  command = agent === "opencode1" ? process.env.OPENCODE1_BIN : "opencode";
   args = ["run", "--model", "mock/mock-model", "go"];
 } else {
   throw new Error(`unknown agent ${agent}`);
