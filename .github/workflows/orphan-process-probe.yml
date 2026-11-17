@@ -1,7 +1,5 @@
 name: orphan-process-probe
 on:
-  push:
-    branches: [ci/orphan-process-probe]
   workflow_dispatch:
 permissions:
   contents: read
