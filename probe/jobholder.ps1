@@ -60,7 +60,7 @@ for ($round = 0; $round -lt 3; $round++) {
   Start-Sleep -Milliseconds 300
 }
 "ready"
-[void][ProbeJob]::WaitForSingleObject($target, 0xFFFFFFFF)
+[void][ProbeJob]::WaitForSingleObject($target, [uint32]::MaxValue)
 "target exited; terminating job"
 [void][ProbeJob]::TerminateJobObject($job, 1)
 "done"
