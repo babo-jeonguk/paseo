@@ -37,3 +37,6 @@ jobs:
       - name: Provider suites that spawn through it
         working-directory: packages/server
         run: npx vitest run src/server/agent/providers/claude/agent.env.test.ts src/server/agent/providers/claude/models.test.ts src/server/agent/providers/codex-app-server-agent.spawn-error.test.ts src/server/agent/providers/opencode-server-manager.test.ts src/server/agent/providers/acp-startup-exit.test.ts
+      - name: Daemon bootstrap and shutdown
+        working-directory: packages/server
+        run: npx vitest run src/server/bootstrap.smoke.test.ts
