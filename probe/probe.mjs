@@ -21,7 +21,9 @@ const port = Number(portArg);
 const isWin = process.platform === "win32";
 const resultsDir = path.resolve("results");
 fs.mkdirSync(resultsDir, { recursive: true });
-const label = `${process.platform}-${agent}-${variant}`;
+// Windows only: "walk" (parent PID after exit), "snapshot" (record descendants while alive), "job" (job object via PowerShell).
+const strategy = isWin ? process.env.PROBE_STRATEGY || "walk" : "marker";
+const label = `${process.platform}-${agent}-${variant}${isWin && strategy !== "walk" ? `-${strategy}` : ""}`;
 const work = fs.mkdtempSync(path.join(os.tmpdir(), `probe-${agent}-`));
 const agentLog = path.join(resultsDir, `${label}.agent.log`);
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
@@ -213,6 +215,12 @@ const logFd = fs.openSync(agentLog, "w");
 const child = spawn(command, args, { cwd: work, env, shell: isWin, stdio: ["ignore", logFd, logFd], windowsHide: true });
 let childExit = null;
 child.on("exit", (code, signal) => { childExit = { code, signal }; });
+let holder;
+if (strategy === "job") {
+  const holderLog = fs.openSync(path.join(resultsDir, `${label}.jobholder.log`), "w");
+  holder = spawn("powershell", ["-NoProfile", "-ExecutionPolicy", "Bypass", "-File", path.resolve("jobholder.ps1"), "-TargetPid", String(child.pid)],
+    { stdio: ["ignore", holderLog, holderLog], windowsHide: true });
+}
 
 // ---------- proposed reap step ----------
 // Linux: /proc/<pid>/environ holds the marker. macOS: `ps -E` shows it.
@@ -237,6 +245,10 @@ function markerProcesses() {
 function windowsDescendants(agentPid, agentCreated) {
   const table = processes();
   const found = new Map([[agentPid, agentCreated]]);
+  // snapshot: start also from remembered descendants that still have the same creation time.
+  for (const [pid, created] of known) {
+    if (table.some((p) => p.pid === pid && p.created === created)) found.set(pid, created);
+  }
   for (let changed = true; changed; ) {
     changed = false;
     for (const p of table) {
@@ -252,7 +264,7 @@ function windowsDescendants(agentPid, agentCreated) {
   return [...found.keys()];
 }
 async function reap(agentProc, tableBeforeKill) {
-  const method = isWin ? "parent-pid+creation-time" : "marker-env";
+  const method = isWin ? (strategy === "snapshot" ? "snapshot+parent-pid" : strategy === "job" ? "job(after-exit fallback walk)" : "parent-pid+creation-time") : "marker-env";
   const agentCreated = tableBeforeKill.find((p) => p.pid === agentProc.pid)?.created;
   const pids = isWin ? windowsDescendants(agentProc.pid, agentCreated) : markerProcesses();
   const table = new Map(processes().map((p) => [p.pid, p]));
@@ -302,7 +314,27 @@ function portOpen() {
   });
 }
 
-const result = { os: process.platform, agent, variant, port };
+const result = { os: process.platform, agent, variant, strategy, port };
+// strategy "snapshot": remember descendants (pid + creation time) while the agent is alive.
+const known = new Map();
+function rememberDescendants() {
+  try {
+    const table = processes();
+    const root = table.find((p) => p.pid === child.pid);
+    if (!root) return;
+    const seen = new Map([[root.pid, root.created]]);
+    for (let changed = true; changed; ) {
+      changed = false;
+      for (const p of table) {
+        if (seen.has(p.pid) || !seen.has(p.ppid)) continue;
+        if (p.created === undefined || p.created < seen.get(p.ppid)) continue;
+        seen.set(p.pid, p.created); changed = true;
+      }
+    }
+    for (const [pid, created] of seen) if (pid !== child.pid) known.set(pid, created);
+  } catch {}
+}
+const snapshotTimer = strategy === "snapshot" ? setInterval(rememberDescendants, 2000) : undefined;
 try {
   const deadline = Date.now() + 180_000;
   while (Date.now() < deadline && !(await portOpen()) && !childExit) await sleep(1000);
@@ -325,6 +357,7 @@ try {
   const agentProc = chain.find((p, i) => i > 0 && !helper.test(p.name) && p.pid !== process.pid);
   if (!agentProc) { result.status = "agent-not-found"; throw new Error("agent process not found in chain"); }
   result.killed = agentProc;
+  if (snapshotTimer) { rememberDescendants(); clearInterval(snapshotTimer); }
   if (isWin) execFileSync("taskkill", ["/F", "/PID", String(agentProc.pid)], { stdio: "ignore" });
   else process.kill(agentProc.pid, "SIGKILL");
   await sleep(10_000);
@@ -349,6 +382,7 @@ try {
     } catch {}
   }
   try { if (isWin) execFileSync("taskkill", ["/F", "/T", "/PID", String(child.pid)], { stdio: "ignore" }); else child.kill("SIGKILL"); } catch {}
+  try { if (holder) execFileSync("taskkill", ["/F", "/T", "/PID", String(holder.pid)], { stdio: "ignore" }); } catch {}
   for (const res of held) res.destroy();
   mock.close();
   setTimeout(() => process.exit(0), 500).unref();

@@ -47,6 +47,18 @@ jobs:
               node probe.mjs "$a" "$v" $((18100+i)) || echo "probe crashed: $a $v"
             done
           done
+      - name: Probe Windows strategies
+        if: runner.os == 'Windows'
+        run: |
+          i=40
+          for s in snapshot job; do
+            for a in claude opencode1; do
+              for v in direct nested; do
+                i=$((i+1))
+                PROBE_STRATEGY=$s node probe.mjs "$a" "$v" $((18100+i)) || echo "probe crashed: $s $a $v"
+              done
+            done
+          done
       - name: Summary
         if: always()
         run: |
