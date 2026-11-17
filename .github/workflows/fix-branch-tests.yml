@@ -24,6 +24,8 @@ jobs:
           cache: "npm"
       - name: Install dependencies
         run: node scripts/npm-retry.mjs ci
+      - name: Install agent CLIs for provider tests
+        run: node scripts/npm-retry.mjs install -g @anthropic-ai/claude-code opencode-ai
       - name: Build server dependencies
         run: npm run build:server-deps
       - name: Head commit
